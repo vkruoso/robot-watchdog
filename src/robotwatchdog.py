@@ -1,9 +1,11 @@
-import json
 import Queue
-import requests
+import time
 import threading
 
-__all__ = ['watchdog']
+from MeteorClient import MeteorClient
+
+
+__all__ = ['robotwatchdog']
 
 FINISH = 1
 
@@ -11,26 +13,74 @@ FINISH = 1
 class sender(object):
 
     def __init__(self, queue):
+        self.run = None
         self.queue = queue
-        self.thread = threading.Thread(target=self.run)
+        self.thread = threading.Thread(target=self.work)
+        self.client = MeteorClient('ws://127.0.0.1:3000/websocket')
+        self.client.on('connected', self.connected_event)
+        self.client.connect()
+
+        self.configs = {
+            # run
+            'start_run': {
+                'method': 'startRun',
+                'callback': self.handle_run_call
+            },
+
+            # suites
+            'start_suite': {'method': 'startSuite'},
+            'end_suite': {'method': 'endSuite'},
+
+            # test
+            'start_test': {'method': 'startTest'},
+            'end_test': {'method': 'endTest'},
+        }
+
+    def connected_event(self):
+        self.connected = True
+        self.thread = threading.Thread(target=self.work)
         self.thread.start()
 
-    def run(self):
+    def handle_call(self, error, result):
+        self.error = error
+        self.called = True
+
+    def handle_run_call(self, error, result):
+        self.handle_call(error, result)
+        self.run = result.get('run', None)
+
+    def work(self):
         while True:
             data = self.queue.get()
             if data == FINISH:
                 return
 
+            if self.run:
+                data.update({'run': self.run})
+
             # Handle the data
-            data = json.dumps(data, ensure_ascii=False).encode('utf8')
+            op = data['op']
+            del data['op']
+            if op not in self.configs:
+                continue
+
+            config = self.configs[op]
+            method = config.get('method')
+            callback = config.get('callback', self.handle_call)
 
             try:
-                requests.post('http://localhost:2688/', data)
+                self.called = False
+                self.client.call(method, [data], callback)
+                while not self.called:
+                    time.sleep(0.05)
             except:
                 pass
 
+    def close(self):
+        self.thread.join()
 
-class watchdog(object):
+
+class robotwatchdog(object):
 
     ROBOT_LISTENER_API_VERSION = 2
 
@@ -38,8 +88,11 @@ class watchdog(object):
         self.queue = Queue.Queue()
         self.sender = sender(self.queue)
 
+        self.queue.put({'op': 'start_run'})
+
     def close(self):
         self.queue.put(FINISH)
+        self.sender.close()
 
     def start_suite(self, name, attributes):
         self.queue.put({
