@@ -10,7 +10,7 @@ __all__ = ['robotwatchdog']
 FINISH = 1
 
 
-class sender(object):
+class _MeteorSender(object):
 
     def __init__(self, queue):
         self.run = None
@@ -31,9 +31,16 @@ class sender(object):
             'start_suite': {'method': 'startSuite'},
             'end_suite': {'method': 'endSuite'},
 
-            # test
+            # tests
             'start_test': {'method': 'startTest'},
             'end_test': {'method': 'endTest'},
+
+            # keywords
+            'start_keyword': {'method': 'startKeyword'},
+            'end_keyword': {'method': 'endKeyword'},
+
+            # messages
+            'log_message': {'method': 'logMessage'}
         }
 
     def connected_event(self):
@@ -80,14 +87,24 @@ class sender(object):
         self.thread.join()
 
 
+class _Counter(object):
+
+    def __init__(self, id_):
+        self.id = id_
+        self.count = 0
+
+    def add(self):
+        self.count = self.count + 1
+
+
 class robotwatchdog(object):
 
     ROBOT_LISTENER_API_VERSION = 2
 
     def __init__(self):
+        self.ids = []
         self.queue = Queue.Queue()
-        self.sender = sender(self.queue)
-
+        self.sender = _MeteorSender(self.queue)
         self.queue.put({'op': 'start_run'})
 
     def close(self):
@@ -95,6 +112,7 @@ class robotwatchdog(object):
         self.sender.close()
 
     def start_suite(self, name, attributes):
+        self.ids.append(_Counter(attributes['id']))
         self.queue.put({
             'op': 'start_suite',
             'name': name,
@@ -102,6 +120,7 @@ class robotwatchdog(object):
         })
 
     def end_suite(self, name, attributes):
+        self.ids.pop()
         self.queue.put({
             'op': 'end_suite',
             'name': name,
@@ -109,6 +128,7 @@ class robotwatchdog(object):
         })
 
     def start_test(self, name, attributes):
+        self.ids.append(_Counter(attributes['id']))
         self.queue.put({
             'op': 'start_test',
             'name': name,
@@ -116,6 +136,7 @@ class robotwatchdog(object):
         })
 
     def end_test(self, name, attributes):
+        self.ids.pop()
         self.queue.put({
             'op': 'end_test',
             'name': name,
@@ -123,6 +144,10 @@ class robotwatchdog(object):
         })
 
     def start_keyword(self, name, attributes):
+        id_ = self._build_id()
+        self.ids.append(_Counter(id_))
+
+        attributes.update({'id': id_})
         self.queue.put({
             'op': 'start_keyword',
             'name': name,
@@ -130,8 +155,23 @@ class robotwatchdog(object):
         })
 
     def end_keyword(self, name, attributes):
+        counter = self.ids.pop()
+        attributes.update({'id': counter.id})
+
         self.queue.put({
             'op': 'end_keyword',
             'name': name,
             'attributes': attributes,
         })
+
+    def log_message(self, message):
+        self.queue.put({
+            'op': 'log_message',
+            'id': self.ids[-1].id,
+            'message': message,
+        })
+
+    def _build_id(self):
+        counter = self.ids[-1]
+        counter.add()
+        return '%s-k%s' % (counter.id, counter.count)
